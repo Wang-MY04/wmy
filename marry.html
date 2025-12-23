@@ -1,0 +1,876 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>Golden Christmas - 照片交互体验</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #020205; font-family: 'Times New Roman', serif; }
+        
+        #title-container {
+            position: absolute; top: 10%; width: 100%; text-align: center; pointer-events: none; z-index: 10;
+            transition: opacity 1.5s;
+        }
+        h1 {
+            background: -webkit-linear-gradient(#ffd700, #bf953f);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            font-size: 55px; margin: 0; letter-spacing: 6px;
+            filter: drop-shadow(0 0 15px rgba(255, 215, 0, 0.5));
+        }
+        p { color: #888; letter-spacing: 4px; font-size: 14px; margin-top: 10px; text-transform: uppercase; font-family: sans-serif; }
+
+        #ui-controls {
+            position: absolute; bottom: 40px; left: 50%; transform: translateX(-50%);
+            z-index: 100; display: flex; gap: 20px;
+            padding: 15px 30px; background: rgba(0,0,0,0.4); border-radius: 50px;
+            border: 1px solid rgba(255, 215, 0, 0.2); backdrop-filter: blur(5px);
+        }
+
+        button {
+            background: transparent; border: 1px solid rgba(255, 215, 0, 0.4); color: #ffd700;
+            padding: 10px 25px; border-radius: 25px; cursor: pointer; font-size: 14px;
+            transition: 0.3s; text-transform: uppercase; letter-spacing: 1px;
+        }
+        button:hover { background: rgba(255, 215, 0, 0.1); box-shadow: 0 0 20px rgba(255, 215, 0, 0.3); transform: translateY(-2px); }
+        .active-btn { background: #ffd700; color: #000; border-color: #ffd700; font-weight: bold; }
+
+        #debug-panel {
+            position: fixed; top: 10px; left: 10px; color: #444; font-family: monospace; font-size: 10px; pointer-events: none;
+        }
+        #gesture-status {
+            position: fixed; top: 30px; right: 30px; 
+            color: #ffd700; font-size: 16px; font-weight: bold; text-shadow: 0 0 10px #ffd700;
+            opacity: 0; transition: opacity 0.3s; pointer-events: none;
+            border: 1px solid #ffd700; padding: 5px 15px; border-radius: 5px;
+        }
+
+        #camera-preview {
+            position: absolute; bottom: 20px; left: 20px; width: 100px; height: 75px;
+            border-radius: 5px; border: 1px solid #333; opacity: 0; transition: opacity 0.5s;
+            transform: scaleX(-1);
+        }
+        #input_video { width: 100%; height: 100%; object-fit: cover; }
+
+        #cursor {
+            position: fixed; width: 50px; height: 50px;
+            border: 1px solid rgba(255, 215, 0, 0.8); border-radius: 50%;
+            transform: translate(-50%, -50%); pointer-events: none; z-index: 999;
+            box-shadow: 0 0 20px rgba(255, 215, 0, 0.3); display: none;
+            transition: width 0.2s, height 0.2s;
+        }
+        #cursor::after {
+            content: ''; position: absolute; top: 50%; left: 50%; width: 4px; height: 4px;
+            background: #ffd700; border-radius: 50%; transform: translate(-50%, -50%);
+        }
+        #cursor.active { width: 70px; height: 70px; background: rgba(255, 215, 0, 0.1); border-color: #fff; }
+
+        #loading {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: #000; z-index: 2000; color: #ffd700;
+            display: flex; flex-direction: column; justify-content: center; align-items: center;
+            transition: opacity 1s;
+        }
+        .spinner {
+            width: 40px; height: 40px; border: 3px solid #333; border-top: 3px solid #ffd700;
+            border-radius: 50%; animation: spin 1s linear infinite; margin-bottom: 20px;
+        }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    </style>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.9.1/gsap.min.js"></script>
+    <script src="https://unpkg.com/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://unpkg.com/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+</head>
+<body>
+
+    <div id="loading">
+        <div class="spinner"></div>
+        <div>加载圣诞魔法...</div>
+    </div>
+
+    <div id="debug-panel"></div>
+
+    <div id="title-container">
+        <h1>MERRY CHRISTMAS</h1>
+        <p>GOLDEN EDITION</p>
+    </div>
+
+    <div id="gesture-status">未检测到</div>
+
+    <div id="ui-controls">
+        <button onclick="document.getElementById('file-input').click()">📷 添加照片</button>
+        <button id="start-btn" class="active-btn" onclick="startExperience()">🖐 手势控制</button>
+        <input type="file" id="file-input" multiple accept="image/*" style="display:none" onchange="handleUpload(this)">
+    </div>
+
+    <div id="camera-preview"><video id="input_video" playsinline></video></div>
+    <div id="cursor"></div>
+
+<script>
+    const CONFIG = {
+        particleCount: 16000,
+        transitionDuration: 2.0,
+        colors: ['#ffd700', '#bf953f', '#fffacd', '#ffffff'],
+        // 照片动画配置
+        photoAnimation: {
+            centerPosition: new THREE.Vector3(0, 0, 40), // 屏幕中心位置，稍微远一点
+            zoomScale: 3.0, // 放大三倍
+            animationDuration: 0.7, // 动画持续时间
+            stayDuration: 2.5, // 在中心停留时间
+            cooldownTime: 1.0 // 冷却时间
+        },
+        // 球体旋转配置
+        sphereRotation: {
+            enabled: true,
+            autoRotationSpeed: 0.003, // 自动旋转速度
+            activeRotationSpeed: 0.01, // 手势激活时旋转速度
+            returnToRandomSpeed: 1.0 // 返回到随机位置的速度
+        },
+        // 手势灵敏度配置
+        gestureSensitivity: {
+            fistThreshold: 1.5,
+            rotationRange: {
+                horizontal: 4.0, // 水平旋转范围
+                vertical: 2.0    // 垂直旋转范围
+            }
+        }
+    };
+
+    let scene, camera, renderer;
+    let particlesList = [];
+    let photoGroup = new THREE.Group();
+    let uploadedPhotos = [];
+    let currentShape = 'tree';
+    let photoTimers = new Map();
+    
+    // 新增变量
+    let isCooldown = false;
+    let isPhotoInCenter = false;
+    let currentCenterPhoto = null;
+    let sphereAutoRotate = true;
+    let photoSequenceIndex = 0;
+    let photoSequenceTimer = null;
+    
+    // 手势控制变量
+    let handControlReset = true;
+    let handStartX = 0.5, handStartY = 0.5;
+    let handDeltaX = 0, handDeltaY = 0;
+    
+    // 存储每个照片的随机目标位置
+    let photoRandomTargets = new Map();
+
+    function init() {
+        scene = new THREE.Scene();
+        scene.fog = new THREE.FogExp2(0x020205, 0.0025);
+
+        camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
+        camera.position.z = 75;
+
+        renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        document.body.appendChild(renderer.domElement);
+
+        scene.add(photoGroup);
+
+        createPolymorphicParticles();
+        generateLayout('tree');
+        animate();
+
+        setTimeout(() => {
+            document.getElementById('loading').style.opacity = 0;
+            setTimeout(() => document.getElementById('loading').remove(), 1000);
+        }, 1500);
+    }
+
+    function createEmojiTexture(emoji, size=64) {
+        const canvas = document.createElement('canvas');
+        canvas.width = size; canvas.height = size;
+        const ctx = canvas.getContext('2d');
+        ctx.font = `${size*0.7}px serif`;
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillStyle = '#ffffff';
+        ctx.fillText(emoji, size/2, size/2);
+        const tex = new THREE.CanvasTexture(canvas);
+        tex.needsUpdate = true; return tex;
+    }
+
+    function createCircleTexture() {
+        const canvas = document.createElement('canvas');
+        canvas.width = 32; canvas.height = 32;
+        const ctx = canvas.getContext('2d');
+        const grad = ctx.createRadialGradient(16,16,0, 16,16,16);
+        grad.addColorStop(0, 'rgba(255,255,255,1)');
+        grad.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = grad; ctx.fillRect(0,0,32,32);
+        const tex = new THREE.CanvasTexture(canvas);
+        tex.needsUpdate = true; return tex;
+    }
+
+    function createPolymorphicParticles() {
+        const symbols = ['🔔', '❄️', '✨'];
+        symbols.forEach((symbol, idx) => {
+            const count = 400;
+            const geo = new THREE.BufferGeometry();
+            const positions = [];
+            for(let i=0; i<count; i++) positions.push(0,0,0);
+            geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+            
+            const mat = new THREE.PointsMaterial({
+                size: 2.5 + idx * 0.5,
+                map: createEmojiTexture(symbol),
+                transparent: true, opacity: 0.95, depthWrite: false, blending: THREE.AdditiveBlending,
+                color: CONFIG.colors[idx % CONFIG.colors.length]
+            });
+           
+            mat.sizeVariation = Math.random();
+
+            const pts = new THREE.Points(geo, mat);
+            pts.userData = { targets: new Float32Array(count * 3) };
+            scene.add(pts);
+            particlesList.push(pts);
+        });
+
+        const count = 12000;
+        const geo = new THREE.BufferGeometry();
+        const positions = [];
+        const colors = [];
+        const colorList = CONFIG.colors.map(c => new THREE.Color(c));
+        for(let i=0; i<count; i++) {
+            positions.push(0,0,0);
+            const r = Math.random();
+            let c;
+            if (r < 0.6) c = colorList[0];
+            else if (r < 0.8) c = colorList[1];
+            else c = colorList[3];
+            colors.push(c.r, c.g, c.b);
+        }
+        geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+        geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+        
+        const mat = new THREE.PointsMaterial({
+            size: 0.8, map: createCircleTexture(), vertexColors: true,
+            transparent: true, opacity: 0.8, blending: THREE.AdditiveBlending, depthWrite: false
+        });
+        const pts = new THREE.Points(geo, mat);
+        pts.userData = { targets: new Float32Array(count * 3) };
+        scene.add(pts);
+        particlesList.push(pts);
+    }
+
+    function generateLayout(type) {
+        currentShape = type;
+        
+        particlesList.forEach(pts => {
+            const count = pts.geometry.attributes.position.count;
+            const targets = pts.userData.targets;
+            
+            for (let i = 0; i < count; i++) {
+                let x, y, z;
+                if (type === 'tree') {
+                    const layer = i / count;
+                    const h = 60;
+                    y = (layer * h) - (h / 2);
+                    let r = 22 * (1 - layer);
+                    r += (Math.random() - 0.5) * 1.5;
+                    const angle = layer * 50 + i * 0.1;
+                    x = Math.cos(angle) * r;
+                    z = Math.sin(angle) * r;
+                    
+                    if (particlesList.indexOf(pts) < 3) {
+                        x *= 1.15; z *= 1.15;
+                    }
+                } else {
+                    const r = 35 * Math.cbrt(Math.random());
+                    const theta = Math.random() * Math.PI * 2;
+                    const phi = Math.acos(2 * Math.random() - 1);
+                    x = r * Math.sin(phi) * Math.cos(theta);
+                    y = r * Math.sin(phi) * Math.sin(theta);
+                    z = r * Math.cos(phi);
+                }
+                targets[i*3] = x; targets[i*3+1] = y; targets[i*3+2] = z;
+            }
+        });
+        
+        // 生成随机位置
+        generateRandomPositions();
+        
+        // 更新照片位置
+        updatePhotos(type);
+    }
+
+    // 新增：为每张照片生成随机目标位置
+    function generateRandomPositions() {
+        if (uploadedPhotos.length === 0) return;
+        
+        const radius = 35; // 球体半径
+        photoRandomTargets.clear();
+        
+        uploadedPhotos.forEach((photo, i) => {
+            // 使用斐波那契螺旋分布生成随机均匀分布的点
+            const phi = Math.acos(1 - 2 * (i + 0.5) / uploadedPhotos.length);
+            const theta = Math.PI * (1 + Math.sqrt(5)) * i;
+            
+            // 随机偏移，使位置更自然
+            const offsetX = (Math.random() - 0.5) * 10;
+            const offsetY = (Math.random() - 0.5) * 10;
+            const offsetZ = (Math.random() - 0.5) * 10;
+            
+            const x = radius * Math.sin(phi) * Math.cos(theta) + offsetX;
+            const y = radius * Math.sin(phi) * Math.sin(theta) + offsetY;
+            const z = radius * Math.cos(phi) + offsetZ;
+            
+            photoRandomTargets.set(photo, { x, y, z });
+        });
+    }
+
+    function handleUpload(input) {
+        if (!input.files.length) return;
+        uploadedPhotos.forEach(obj => photoGroup.remove(obj));
+        uploadedPhotos = [];
+        
+        // 清除之前的序列展示定时器
+        if (photoSequenceTimer) {
+            clearTimeout(photoSequenceTimer);
+            photoSequenceTimer = null;
+        }
+        
+        const files = Array.from(input.files);
+        files.forEach((file, i) => {
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const img = new Image();
+                img.src = e.target.result;
+                img.onload = () => {
+                    const aspect = img.width / img.height;
+                    const w = 10 * aspect;
+                    const h = 10;
+                    
+                    // 创建照片材质 - 去掉边框
+                    const geometry = new THREE.PlaneGeometry(w, h);
+                    const material = new THREE.MeshBasicMaterial({ 
+                        map: new THREE.Texture(img), 
+                        side: THREE.DoubleSide,
+                        transparent: true,
+                        opacity: 0
+                    });
+                    material.map.needsUpdate = true;
+                    
+                    const group = new THREE.Group();
+                    const photoMesh = new THREE.Mesh(geometry, material);
+                    group.add(photoMesh);
+                    
+                    group.userData = { 
+                        id: i, 
+                        isZoomed: false, 
+                        originalScale: 1,
+                        originalPosition: null,
+                        originalOpacity: 1,
+                        originalRotation: null,
+                        material: material,
+                        photoMesh: photoMesh
+                    };
+                    
+                    photoGroup.add(group);
+                    uploadedPhotos.push(group);
+                    
+                    // 淡入动画
+                    gsap.to(material, { opacity: 1, duration: 0.6, delay: i * 0.15 });
+
+                    if (uploadedPhotos.length === files.length) {
+                        // 切换到球体并开始展示
+                        generateLayout('sphere');
+                        
+                        // 开始照片序列展示
+                        photoSequenceIndex = 0;
+                        startPhotoSequenceShowcase();
+                    }
+                }
+            };
+            reader.readAsDataURL(file);
+        });
+    }
+
+    // 修改：照片序列展示 - 展示完后回到随机位置
+    function startPhotoSequenceShowcase() {
+        if (uploadedPhotos.length === 0) return;
+        
+        // 开始第一个照片的展示
+        showcaseNextPhoto();
+    }
+
+    function showcaseNextPhoto() {
+        if (photoSequenceIndex >= uploadedPhotos.length) {
+            // 所有照片展示完毕，回到随机位置
+            setTimeout(() => {
+                uploadedPhotos.forEach(photo => {
+                    returnPhotoToRandomPosition(photo);
+                });
+            }, 500);
+            return;
+        }
+        
+        const photo = uploadedPhotos[photoSequenceIndex];
+        
+        // 保存当前位置
+        photo.userData.originalPosition = photo.position.clone();
+        photo.userData.originalRotation = photo.rotation.clone();
+        photo.userData.originalScale = photo.scale.x;
+        
+        // 计算屏幕中心位置
+        const centerPos = CONFIG.photoAnimation.centerPosition.clone();
+        
+        // 动画序列
+        const timeline = gsap.timeline({
+            onStart: () => {
+                // 淡出其他照片
+                uploadedPhotos.forEach(p => {
+                    if (p !== photo) {
+                        gsap.to(p.userData.material, { opacity: 0.2, duration: 0.4 });
+                    }
+                });
+            },
+            onComplete: () => {
+                // 停留1.5秒后展示下一张
+                photoSequenceTimer = setTimeout(() => {
+                    // 返回随机位置
+                    returnPhotoToRandomPosition(photo);
+                    
+                    // 恢复所有照片透明度
+                    uploadedPhotos.forEach(p => {
+                        gsap.to(p.userData.material, { opacity: 1, duration: 0.4 });
+                    });
+                    
+                    // 展示下一张
+                    photoSequenceIndex++;
+                    photoSequenceTimer = setTimeout(showcaseNextPhoto, 300);
+                }, 1500);
+            }
+        });
+        
+        // 移动到中心
+        timeline.to(photo.position, {
+            x: centerPos.x,
+            y: centerPos.y,
+            z: centerPos.z,
+            duration: CONFIG.photoAnimation.animationDuration,
+            ease: "power2.out"
+        }, 0);
+        
+        // 放大到三倍
+        timeline.to(photo.scale, {
+            x: CONFIG.photoAnimation.zoomScale,
+            y: CONFIG.photoAnimation.zoomScale,
+            z: CONFIG.photoAnimation.zoomScale,
+            duration: CONFIG.photoAnimation.animationDuration,
+            ease: "back.out(1.2)"
+        }, 0);
+        
+        // 使照片面向相机
+        timeline.to(photo.rotation, {
+            x: 0,
+            y: 0,
+            z: 0,
+            duration: CONFIG.photoAnimation.animationDuration * 0.8,
+            ease: "power2.out"
+        }, 0);
+    }
+
+    // 新增：将照片返回到随机位置
+    function returnPhotoToRandomPosition(photo) {
+        if (!photoRandomTargets.has(photo)) return;
+        
+        const targetPos = photoRandomTargets.get(photo);
+        const originalScale = photo.userData.originalScale || 1;
+        
+        // 创建随机旋转
+        const randomRotation = {
+            x: Math.random() * 0.1,
+            y: Math.random() * Math.PI * 2,
+            z: Math.random() * 0.1
+        };
+        
+        // 动画返回到随机位置
+        const timeline = gsap.timeline();
+        
+        timeline.to(photo.position, {
+            x: targetPos.x,
+            y: targetPos.y,
+            z: targetPos.z,
+            duration: CONFIG.sphereRotation.returnToRandomSpeed,
+            ease: "power2.inOut"
+        });
+        
+        timeline.to(photo.scale, {
+            x: originalScale,
+            y: originalScale,
+            z: originalScale,
+            duration: CONFIG.sphereRotation.returnToRandomSpeed,
+            ease: "power2.inOut"
+        }, 0);
+        
+        timeline.to(photo.rotation, {
+            x: randomRotation.x,
+            y: randomRotation.y,
+            z: randomRotation.z,
+            duration: CONFIG.sphereRotation.returnToRandomSpeed,
+            ease: "power2.inOut"
+        }, 0);
+        
+        // 保存新的随机位置作为下次返回的目标
+        photo.userData.originalPosition = photo.position.clone();
+        photo.userData.originalRotation = photo.rotation.clone();
+    }
+
+    function updatePhotos(type) {
+        if (!uploadedPhotos.length) return;
+        const count = uploadedPhotos.length;
+        const scaleFactor = count <= 6 ? 1.5 : 1.0;
+
+        uploadedPhotos.forEach((group, i) => {
+            let tx, ty, tz, s;
+            if (type === 'tree') {
+                const layer = (i + 0.5) / count;
+                const h = 50; ty = (layer * h) - (h / 2);
+                const r = 22 * (1 - layer) + 5;
+                const angle = (i / count) * Math.PI * 6;
+                tx = Math.cos(angle) * r; tz = Math.sin(angle) * r; s = 0.5 * scaleFactor;
+            } else {
+                // 使用斐波那契球面分布，使照片均匀分布在球体上
+                const phi = Math.acos(1 - 2 * (i + 0.5) / count);
+                const theta = Math.PI * (1 + Math.sqrt(5)) * (i + 0.5);
+                const r = 35;
+                tx = r * Math.sin(phi) * Math.cos(theta);
+                ty = r * Math.sin(phi) * Math.sin(theta);
+                tz = r * Math.cos(phi);
+                s = 1.0 * scaleFactor;
+            }
+       
+            // 保存原始位置
+            if (!group.userData.originalPosition) {
+                group.userData.homePos = { x: tx, y: ty, z: tz };
+            }
+            
+            // 如果照片不在动画中，则更新位置
+            if (!isPhotoInCenter || group !== currentCenterPhoto) {
+                gsap.to(group.position, { 
+                    x: tx, 
+                    y: ty, 
+                    z: tz, 
+                    duration: CONFIG.transitionDuration, 
+                    ease: "power2.inOut" 
+                });
+                gsap.to(group.scale, { 
+                    x: s, 
+                    y: s, 
+                    z: s, 
+                    duration: CONFIG.transitionDuration, 
+                    ease: "power2.inOut" 
+                });
+                group.userData.originalScale = s;
+            }
+        });
+    }
+
+    // 修改：手势选择照片 - 照片移动到中间放大，其他照片继续旋转
+    function zoomPhotoToCenter(photo) {
+        if (isCooldown || isPhotoInCenter) return;
+        
+        isCooldown = true;
+        isPhotoInCenter = true;
+        currentCenterPhoto = photo;
+        
+        // 保存原始位置、旋转和缩放
+        if (!photo.userData.originalPosition) {
+            photo.userData.originalPosition = photo.position.clone();
+        }
+        if (!photo.userData.originalRotation) {
+            photo.userData.originalRotation = photo.rotation.clone();
+        }
+        photo.userData.originalScale = photo.scale.x;
+        
+        // 计算屏幕中心位置
+        const centerPos = CONFIG.photoAnimation.centerPosition.clone();
+        
+        // 动画序列：移动到中心 -> 放大 -> 停留 -> 恢复
+        const timeline = gsap.timeline({
+            onComplete: () => {
+                // 停留一段时间后恢复
+                setTimeout(() => {
+                    returnPhotoToRandomPosition(photo);
+                    
+                    // 重置状态
+                    setTimeout(() => {
+                        isCooldown = false;
+                        isPhotoInCenter = false;
+                        currentCenterPhoto = null;
+                    }, CONFIG.photoAnimation.cooldownTime * 1000);
+                }, CONFIG.photoAnimation.stayDuration * 1000);
+            }
+        });
+        
+        // 步骤1：移动到中心并放大
+        timeline.to(photo.position, {
+            x: centerPos.x,
+            y: centerPos.y,
+            z: centerPos.z,
+            duration: CONFIG.photoAnimation.animationDuration,
+            ease: "back.out(1.2)"
+        }, 0);
+        
+        timeline.to(photo.scale, {
+            x: CONFIG.photoAnimation.zoomScale,
+            y: CONFIG.photoAnimation.zoomScale,
+            z: CONFIG.photoAnimation.zoomScale,
+            duration: CONFIG.photoAnimation.animationDuration,
+            ease: "power2.out"
+        }, 0);
+        
+        timeline.to(photo.rotation, {
+            x: 0,
+            y: 0,
+            z: 0,
+            duration: CONFIG.photoAnimation.animationDuration * 0.8,
+            ease: "power2.out"
+        }, 0);
+        
+        // 步骤2：淡出其他照片（但不是完全隐藏）
+        uploadedPhotos.forEach(p => {
+            if (p !== photo) {
+                timeline.to(p.userData.material, {
+                    opacity: 0.4,
+                    duration: 0.5
+                }, 0);
+            }
+        });
+        
+        // 增强当前照片的亮度
+        timeline.to(photo.userData.material, {
+            opacity: 1,
+            duration: 0.5
+        }, 0);
+    }
+
+    function animate() {
+        requestAnimationFrame(animate);
+
+        const lerpSpeed = 0.02;
+        particlesList.forEach(pts => {
+            const positions = pts.geometry.attributes.position.array;
+            const targets = pts.userData.targets;
+            for (let i = 0; i < positions.length; i++) {
+                positions[i] += (targets[i] - positions[i]) * lerpSpeed;
+            }
+            pts.geometry.attributes.position.needsUpdate = true;
+        });
+
+        // 球体自动旋转（如果没有照片在中心）
+        if (currentShape === 'sphere' && sphereAutoRotate && !isPhotoInCenter) {
+            const rotationSpeed = isHandActive ? 
+                CONFIG.sphereRotation.activeRotationSpeed : 
+                CONFIG.sphereRotation.autoRotationSpeed;
+            
+            // 只有当没有照片在中心时，才旋转整个组
+            if (!isPhotoInCenter) {
+                photoGroup.rotation.y += rotationSpeed;
+            }
+        }
+
+        // 手势控制旋转 - 改进版
+        if (isHandActive && !isPhotoInCenter) {
+            // 使用新的控制逻辑：基于手部移动的相对变化
+            const targetRotY = handDeltaX * CONFIG.gestureSensitivity.rotationRange.horizontal;
+            const targetRotX = handDeltaY * CONFIG.gestureSensitivity.rotationRange.vertical;
+
+            // 应用旋转到整个场景
+            scene.rotation.y += (targetRotY - scene.rotation.y) * 0.05;
+            scene.rotation.x += (targetRotX - scene.rotation.x) * 0.05;
+        } else {
+            // 没有手部控制时，缓慢自动旋转
+            scene.rotation.y += 0.002;
+            scene.rotation.x += (0 - scene.rotation.x) * 0.05;
+        }
+
+        // 让照片始终面向相机（除非在中心被放大）
+        uploadedPhotos.forEach(group => {
+            if (!group.userData.isZoomed && group !== currentCenterPhoto) {
+                group.lookAt(camera.position);
+            }
+        });
+
+        if (isHandActive && !isCooldown && !isPhotoInCenter) {
+            checkInteractions();
+        }
+        renderer.render(scene, camera);
+    }
+
+    let isHandActive = false, isHandHovering = false, handX = 0.5, handY = 0.5;
+    const raycaster = new THREE.Raycaster();
+    const mouse = new THREE.Vector2();
+    const statusEl = document.getElementById('gesture-status');
+    let hoverDebounceTimer = null;
+    let lastHoverCheck = 0;
+    const HOVER_DEBOUNCE_TIME = 300;
+
+    function onResults(results) {
+        if (!window.modelLoaded) {
+            window.modelLoaded = true;
+            document.getElementById('start-btn').innerText = "✅ 运行中";
+            document.getElementById('camera-preview').style.opacity = 0.5;
+        }
+
+        if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+            // 手刚刚出现，重置控制起点
+            if (!isHandActive) {
+                handControlReset = true;
+                handStartX = handX;
+                handStartY = handY;
+                handDeltaX = 0;
+                handDeltaY = 0;
+            }
+            
+            isHandActive = true;
+            statusEl.style.opacity = 1;
+
+            const hand = results.multiHandLandmarks[0];
+            const indexTip = hand[8];
+            const wrist = hand[0];
+            const indexMCP = hand[5];
+            
+            // 更新手部位置
+            const newHandX = 1 - indexTip.x;
+            const newHandY = indexTip.y;
+            
+            // 如果控制需要重置，将起点设为当前位置
+            if (handControlReset) {
+                handStartX = newHandX;
+                handStartY = newHandY;
+                handControlReset = false;
+            }
+            
+            // 计算相对于起点的变化量
+            handDeltaX = (newHandX - handStartX) * 2; // 乘以2增加灵敏度
+            handDeltaY = (newHandY - handStartY) * 2;
+            
+            // 限制变化量范围
+            handDeltaX = Math.max(-0.5, Math.min(0.5, handDeltaX));
+            handDeltaY = Math.max(-0.5, Math.min(0.5, handDeltaY));
+            
+            // 更新手部位置用于光标显示
+            handX = newHandX;
+            handY = newHandY;
+            
+            const cursor = document.getElementById('cursor');
+            cursor.style.display = 'block';
+            cursor.style.left = (handX * window.innerWidth) + 'px';
+            cursor.style.top = (handY * window.innerHeight) + 'px';
+
+            const fingerExt = Math.hypot(indexTip.x - wrist.x, indexTip.y - wrist.y);
+            const palmSize = Math.hypot(indexMCP.x - wrist.x, indexMCP.y - wrist.y);
+            const ratio = fingerExt / palmSize;
+            
+            const isFist = ratio < CONFIG.gestureSensitivity.fistThreshold;
+
+            if (isFist) {
+                statusEl.innerText = "✊ 圣诞树";
+                if (currentShape !== 'tree') {
+                    generateLayout('tree');
+                    gsap.to('#title-container', { opacity: 1, duration: 1.5 });
+                    sphereAutoRotate = false;
+                }
+            } else {
+                statusEl.innerText = "🖐 球体";
+                if (currentShape !== 'sphere') {
+                    generateLayout('sphere');
+                    gsap.to('#title-container', { opacity: 0, duration: 1.5 });
+                    sphereAutoRotate = true;
+                    
+                    // 重置手部控制起点
+                    handControlReset = true;
+                }
+            }
+        } else {
+            // 手移出画面
+            isHandActive = false;
+            statusEl.style.opacity = 0;
+            document.getElementById('cursor').style.display = 'none';
+            
+            // 重置控制标志，下次手出现时重新开始
+            handControlReset = true;
+            handDeltaX = 0;
+            handDeltaY = 0;
+        }
+    }
+
+    function checkInteractions() {
+        if (currentShape === 'tree') return;
+
+        mouse.x = (handX * 2) - 1;
+        mouse.y = -(handY * 2) + 1;
+        raycaster.setFromCamera(mouse, camera);
+
+        const intersects = raycaster.intersectObjects(photoGroup.children, true);
+
+        const now = Date.now();
+        if (now - lastHoverCheck < HOVER_DEBOUNCE_TIME) return;
+        lastHoverCheck = now;
+
+        if (intersects.length > 0) {
+            let hitGroup = intersects[0].object;
+            while(hitGroup.parent !== photoGroup) {
+                hitGroup = hitGroup.parent;
+            }
+
+            // 如果这张照片没有被放大且不在冷却期，则放大它
+            if (!hitGroup.userData.isZoomed && !isCooldown && !isPhotoInCenter) {
+                isHandHovering = true;
+                document.getElementById('cursor').classList.add('active');
+                
+                // 放大照片到屏幕中心
+                zoomPhotoToCenter(hitGroup);
+            }
+        } else {
+            if (isHandHovering) {
+                isHandHovering = false;
+                document.getElementById('cursor').classList.remove('active');
+            }
+        }
+    }
+
+    async function startExperience() {
+        const btn = document.getElementById('start-btn');
+        btn.innerText = "⏳ 启动中...";
+        const video = document.getElementById('input_video');
+        
+        try {
+            const hands = new Hands({locateFile: (file) => `https://unpkg.com/@mediapipe/hands/${file}`});
+            hands.setOptions({
+                maxNumHands: 1,
+                modelComplexity: 1,
+                minDetectionConfidence: 0.6,
+                minTrackingConfidence: 0.6
+            });
+            hands.onResults(onResults);
+
+            const cam = new Camera(video, {
+                onFrame: async () => { await hands.send({image: video}); },
+                width: 640, height: 480
+            });
+            await cam.start();
+        } catch (e) {
+            alert("启动失败：" + e);
+            btn.innerText = "🖐 手势控制";
+        }
+    }
+
+    window.addEventListener('resize', () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    init();
+</script>
+</body>
+</html>
